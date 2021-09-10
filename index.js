@@ -7,7 +7,7 @@ class SSHWatchUploadWebpackPlugin {
   /*
    * @param { Object } options
    */
-  constructor({ mode, host, port, username, passphrase, privateKey, uploadPath, domain = false, openDomain = false }) {
+  constructor({ mode, host, port, username, passphrase, privateKey, uploadPath, domain = false, openDomain = false, uploadLaravelManifest = false }) {
     this.cache = {};
     this.outputPath = '';
     this.mode = mode;
@@ -19,7 +19,9 @@ class SSHWatchUploadWebpackPlugin {
     this.domain = domain;
     this.openDomain = openDomain;
     this.uploadPath = uploadPath;
+    this.uploadLaravelManifest = uploadLaravelManifest;
     this.ssh = new NodeSSH();
+    this.isFirstUpload = true;
   }
 
   /*
@@ -34,7 +36,7 @@ class SSHWatchUploadWebpackPlugin {
    * @param { Buffer } value
    */
   setCacheValueByKey(key, value) {
-    this.cache[key] = value;
+    this.cache[key] = value.compilation.fullHash;
   }
 
   /*
@@ -44,7 +46,7 @@ class SSHWatchUploadWebpackPlugin {
     console.log(chalk`{yellow [SSHWatchUpload]} {gray [}${this.timestamp()}{gray ]} {gray Uploading} {cyan ${file}...}`);
     const localPath = `${this.outputPath}/${file}`;
     const serverPath = `${this.uploadPath}/${file}`;
-    this.ssh.putFile(localPath, serverPath).then(
+    return this.ssh.putFile(localPath, serverPath).then(
       () => console.log(chalk`{yellow [SSHWatchUpload]} {gray [}${this.timestamp()}{gray ]} {green Upload complete: ${file}}`),
       (error) => console.log(chalk`{yellow [SSHWatchUpload]} {red [Upload error] ${error}}`),
     );
@@ -57,14 +59,37 @@ class SSHWatchUploadWebpackPlugin {
   hook(file, info) {
     // Check cache
     const cachedValue = this.getCacheValueByKey(file);
-    // No cache, set and exit
-    if (!cachedValue) return this.setCacheValueByKey(file, info);
     // Cache match, skip
-    if (cachedValue.equals(info)) return;
+    if (cachedValue === info.compilation.fullHash) return;
     // Update cache
     this.setCacheValueByKey(file, info);
     // SSH
     this.uploadAsset(file);
+  }
+
+  /*
+   * 
+   * @param { Stats } stats
+   */
+  doneHook(stats) {
+    const assets = Object.getOwnPropertyNames(stats.compilation.assets);
+    if (assets.length === 0) {
+      return;
+    }
+    const promises = [];
+    if (this.uploadLaravelManifest) {
+      promises.push(this.uploadAsset('mix-manifest.json'));
+    }
+    if (!this.isFirstUpload) {
+      return;
+    }
+    this.isFirstUpload = false;
+    for (let asset of assets) {
+      promises.push(this.uploadAsset(asset));
+    }
+    if (stats.compilation.compiler.options.watch === false) {
+      Promise.all(promises).then(() => this.ssh.dispose());
+    }
   }
 
   /*
@@ -82,12 +107,15 @@ class SSHWatchUploadWebpackPlugin {
   apply(compiler) {
     if (this.mode !== 'development') return console.log(chalk`{yellow [SSHWatchUpload] Warning: SSHWatchUpload will only run in development mode}`);
     this.init(compiler);
-    compiler.hooks.assetEmitted.tap('SSHWatchUploadWebpackPlugin', this.hook.bind(this));
+    if (compiler.options.watch === true) {
+      compiler.hooks.assetEmitted.tap('SSHWatchUploadWebpackPlugin', this.hook.bind(this));
+    }
+    compiler.hooks.done.tap('SSHWatchUploadWebpackPlugin', this.doneHook.bind(this));
   }
 
   connect() {
     const { host, port, username, passphrase, privateKey } = this;
-    const valideOptions = this.validateConnectionOptions({ host, port, username, passphrase, privateKey });
+    const valideOptions = this.validateConnectionOptions({ host, port, username, privateKey });
     if (!valideOptions) return false;
     this.ssh
       .connect({
