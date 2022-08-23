@@ -7,7 +7,8 @@ class SSHWatchUploadWebpackPlugin {
   /*
    * @param { Object } options
    */
-  constructor({ mode, host, port, username, passphrase, privateKey, uploadPath, domain = false, openDomain = false, uploadLaravelManifest = false }) {
+  constructor({ agent, mode, host, port, username, passphrase, privateKey, uploadPath, domain = false, openDomain = false, uploadLaravelManifest = false }) {
+    this.agent = agent;
     this.cache = {};
     this.outputPath = '';
     this.mode = mode;
@@ -114,11 +115,17 @@ class SSHWatchUploadWebpackPlugin {
   }
 
   connect() {
-    const { host, port, username, passphrase, privateKey } = this;
-    const valideOptions = this.validateConnectionOptions({ host, port, username, privateKey });
-    if (!valideOptions) return false;
+    const { agent, host, port, username, passphrase, privateKey } = this;
+    if (!this.validateConnectionOptions({ host, port, username })) {
+      return false;
+    }
+    if (!this.privateKey && !this.agent) {
+      console.log(chalk`{yellow [SSHWatchUpload]} {red Missing either a "privateKey" or a "agent"}`);
+      return false;
+    }
     this.ssh
       .connect({
+        agent,
         host,
         port,
         username,
